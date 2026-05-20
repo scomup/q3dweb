@@ -634,18 +634,12 @@ describe('RealtimeViewer settings layout', () => {
     makeContainer();
     v = new RealtimeViewer('app', {
       rosbridgeUrl: 'ws://robot.local:9090',
-      cloudTopicName: '/points_raw',
-      odomTopicName: '/odom/wheel',
       maxPointsPerScan: 3200,
       maxAccumulatedPoints: 1_200_000,
     });
 
     expect((v.settingsPanel!.querySelector('[data-role="realtime-ros-url"]') as HTMLInputElement).value)
       .toBe('ws://robot.local:9090');
-    expect((v.settingsPanel!.querySelector('[data-role="realtime-cloud-topic"]') as HTMLInputElement).value)
-      .toBe('/points_raw');
-    expect((v.settingsPanel!.querySelector('[data-role="realtime-odom-topic"]') as HTMLInputElement).value)
-      .toBe('/odom/wheel');
     expect((v.settingsPanel!.querySelector('[data-role="realtime-max-points-per-scan"]') as HTMLInputElement).value)
       .toBe('3200');
     expect((v.settingsPanel!.querySelector('[data-role="realtime-max-accumulated-points"]') as HTMLInputElement).value)

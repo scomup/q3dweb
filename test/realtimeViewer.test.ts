@@ -159,24 +159,21 @@ describe('RealtimeViewer streaming workflow', () => {
   });
 
   it('connects, subscribes, handles publish messages, and disconnects cleanly', () => {
-    const viewer = new RealtimeViewer('app', {
-      cloudTopicName: '/points',
-      odomTopicName: '/odom',
-    });
+    const viewer = new RealtimeViewer('app');
 
     viewer.connectRosbridge('ws://robot:9090');
     const socket = FakeWebSocket.instances[0];
     socket.open();
 
     expect(socket.url).toBe('ws://robot:9090');
-    expect(socket.sent.map(message => JSON.parse(message))).toEqual([
-      { op: 'subscribe', topic: '/points', type: 'sensor_msgs/PointCloud2', queue_length: 1, throttle_rate: 0 },
+    expect(socket.sent.map(message => JSON.parse(message)).slice(0, 2)).toEqual([
+      { op: 'subscribe', topic: '/cloud_registered', type: 'sensor_msgs/PointCloud2', queue_length: 1, throttle_rate: 0 },
       { op: 'subscribe', topic: '/odom', type: 'nav_msgs/Odometry', queue_length: 1, throttle_rate: 0 },
     ]);
 
     socket.message('not json');
-    socket.message(JSON.stringify({ op: 'service_response', topic: '/points', msg: makePointCloud2(1) }));
-    socket.message(JSON.stringify({ op: 'publish', topic: '/points', msg: makePointCloud2(1) }));
+    socket.message(JSON.stringify({ op: 'service_response', topic: '/cloud_registered', msg: makePointCloud2(1) }));
+    socket.message(JSON.stringify({ op: 'publish', topic: '/cloud_registered', msg: makePointCloud2(1) }));
     socket.message(JSON.stringify({
       op: 'publish',
       topic: '/odom',
@@ -194,7 +191,7 @@ describe('RealtimeViewer streaming workflow', () => {
 
     viewer.disconnectRosbridge();
     expect(socket.sent.map(message => JSON.parse(message)).slice(-2)).toEqual([
-      { op: 'unsubscribe', topic: '/points' },
+      { op: 'unsubscribe', topic: '/cloud_registered' },
       { op: 'unsubscribe', topic: '/odom' },
     ]);
     expect(socket.close).toHaveBeenCalled();
@@ -210,6 +207,72 @@ describe('RealtimeViewer streaming workflow', () => {
 
     expect(firstSocket.close).toHaveBeenCalled();
     expect(FakeWebSocket.instances[1].url).toBe('ws://second');
+  });
+
+  it('retries Start SLAM service with alternate service name when first call fails', () => {
+    const viewer = new RealtimeViewer('app', { controlServiceName: '/web_mapping_manager/switch' });
+    viewer.statusElement = document.createElement('div');
+    viewer.connectRosbridge('ws://robot:9090');
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+
+    const startBtn = document.querySelector('[data-role="realtime-start-slam"]') as HTMLButtonElement;
+    startBtn.click();
+
+    const firstRequest = JSON.parse(socket.sent[socket.sent.length - 1]);
+    expect(firstRequest.op).toBe('call_service');
+    expect(firstRequest.service).toBe('/web_mapping_manager/switch');
+    expect(firstRequest.args).toEqual({ switch: true, record: false });
+
+    socket.message(JSON.stringify({
+      op: 'service_response',
+      id: firstRequest.id,
+      service: '/web_mapping_manager/switch',
+      result: false,
+      values: { success: false },
+    }));
+
+    const retryRequest = JSON.parse(socket.sent[socket.sent.length - 1]);
+    expect(retryRequest.op).toBe('call_service');
+    expect(retryRequest.service).toBe('web_mapping_manager/switch');
+    expect(retryRequest.args).toEqual({ switch: true, record: false });
+  });
+
+  it('updates SLAM LED from status service responses', () => {
+    const viewer = new RealtimeViewer('app', { controlServiceName: '/web_mapping_manager/switch' });
+    viewer.connectRosbridge('ws://robot:9090');
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+
+    const statusRequest = JSON.parse(socket.sent[socket.sent.length - 1]);
+    expect(statusRequest.op).toBe('call_service');
+    expect(statusRequest.service).toBe('/web_mapping_manager/status');
+
+    const led = document.querySelector('[data-role="realtime-slam-led"]') as HTMLSpanElement;
+    const label = document.querySelector('[data-role="realtime-slam-status-text"]') as HTMLSpanElement;
+
+    socket.message(JSON.stringify({
+      op: 'service_response',
+      id: statusRequest.id,
+      service: '/web_mapping_manager/status',
+      result: true,
+      values: { slam: true, livox: false, record: false },
+    }));
+
+    expect(led.classList.contains('q3d-slam-led--running')).toBe(true);
+    expect(label.textContent).toBe('Running');
+
+    const statusRequest2 = JSON.parse(socket.sent[socket.sent.length - 1]);
+    socket.message(JSON.stringify({
+      op: 'service_response',
+      id: statusRequest2.id,
+      service: '/web_mapping_manager/status',
+      result: true,
+      values: { slam: false, livox: false, record: false },
+    }));
+
+    expect(led.classList.contains('q3d-slam-led--stopped')).toBe(true);
+    expect(label.textContent).toBe('Stopped');
   });
 
   it('renders NativeCloudItem settings and syncs color mode changes', () => {

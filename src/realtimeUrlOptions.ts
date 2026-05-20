@@ -25,6 +25,8 @@ export function parseRealtimeUrlOptions(params: URLSearchParams): RealtimeUrlOpt
         rosbridgeUrl: firstParam(params, ['ros', 'rosbridge', 'rosbridgeUrl', 'rosUrl', 'ws']),
         cloudTopicName: firstParam(params, ['cloudTopic', 'cloud_topic', 'cloud', 'topic', 'topicName']),
         odomTopicName: firstParam(params, ['odomTopic', 'odom_topic', 'odom']),
+        controlServiceName: firstParam(params, ['controlService', 'control_service', 'switchService', 'switch_service']),
+        autoRecord: firstParam(params, ['record', 'autoRecord', 'auto_record']) === 'true',
         maxPointsPerScan: positiveIntegerParam(params, [
             'maxPointsPerScan',
             'max_points_per_scan',

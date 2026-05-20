@@ -11,6 +11,7 @@ import type {
     DecodedCloudChunk,
     OdomJson,
     PointCloud2Json,
+    RosbridgeServiceResponseMessage,
     RealtimeTopicOptions,
     RosbridgePublishMessage,
 } from './utils/realtimeTypes';
@@ -24,12 +25,25 @@ export class RealtimeViewer extends Viewer {
     private rosbridgeUrl: string = `ws://${window.location.hostname}:9090`;
     private cloudTopicName: string = '/cloud_registered';
     private odomTopicName: string = '/odometry';
+    private controlServiceName: string = '/web_mapping_manager/switch';
+    private statusServiceName: string = '/web_mapping_manager/status';
+    private autoRecord: boolean = false;
     private maxPointsPerScan: number = 1500;
     private rosUrlInput: HTMLInputElement | null = null;
-    private cloudTopicInput: HTMLInputElement | null = null;
-    private odomTopicInput: HTMLInputElement | null = null;
+    private autoRecordInput: HTMLInputElement | null = null;
     private maxScanInput: HTMLInputElement | null = null;
     private maxCloudInput: HTMLInputElement | null = null;
+    private readonly pendingServiceRequests = new Map<string, {
+        action: 'start' | 'end';
+        switchOn: boolean;
+        serviceName: string;
+        fallbackServiceName: string | null;
+    }>();
+    private readonly pendingStatusRequestIds = new Set<string>();
+    private readonly statusLedElements: Partial<Record<'slam' | 'livox' | 'record', HTMLSpanElement>> = {};
+    private readonly statusTextElements: Partial<Record<'slam' | 'livox' | 'record', HTMLSpanElement>> = {};
+    private statusPollTimer: number | null = null;
+    private readonly statusPollIntervalMs = 1000;
     private mapColorMode: ColorMode | null = null;
     private readonly maxQueuedChunks = 4;
     private readonly maxApplyChunksPerCommit = 4;
@@ -64,29 +78,37 @@ export class RealtimeViewer extends Viewer {
         this.rosUrlInput = rosInput;
 
         section.appendChild(rosInput);
-        section.appendChild(makeLabel('Cloud Topic'));
-        const cloudTopicInput = makeTextInput(this.cloudTopicName, v => { this.cloudTopicName = v; });
-        cloudTopicInput.setAttribute('data-role', 'realtime-cloud-topic');
-        this.cloudTopicInput = cloudTopicInput;
-        section.appendChild(cloudTopicInput);
-
-        section.appendChild(makeLabel('Odom Topic'));
-        const odomTopicInput = makeTextInput(this.odomTopicName, v => { this.odomTopicName = v; });
-        odomTopicInput.setAttribute('data-role', 'realtime-odom-topic');
-        this.odomTopicInput = odomTopicInput;
-        section.appendChild(odomTopicInput);
-
         section.appendChild(makeLabel('Max Points / Scan'));
         const maxScanInput = makeNumberInput(this.maxPointsPerScan, 1, 1_000_000, 100, v => { this.maxPointsPerScan = Math.floor(v); });
         maxScanInput.setAttribute('data-role', 'realtime-max-points-per-scan');
         this.maxScanInput = maxScanInput;
         section.appendChild(maxScanInput);
 
+        section.appendChild(makeLabel('Auto Record on Start'));
+        const autoRecordInput = document.createElement('input');
+        autoRecordInput.type = 'checkbox';
+        autoRecordInput.checked = this.autoRecord;
+        autoRecordInput.addEventListener('change', () => {
+            this.autoRecord = autoRecordInput.checked;
+        });
+        autoRecordInput.setAttribute('data-role', 'realtime-auto-record');
+        this.autoRecordInput = autoRecordInput;
+        section.appendChild(autoRecordInput);
+
         section.appendChild(makeLabel('Max Accumulated Points'));
         const maxCloudInput = makeNumberInput(this.realtimeMaxPoints, 10_000, 50_000_000, 100_000, v => { this.realtimeMaxPoints = Math.floor(v); });
         maxCloudInput.setAttribute('data-role', 'realtime-max-accumulated-points');
         this.maxCloudInput = maxCloudInput;
         section.appendChild(maxCloudInput);
+
+        section.appendChild(makeLabel('System State'));
+        const statusPanel = document.createElement('div');
+        statusPanel.className = 'q3d-runtime-status';
+        statusPanel.setAttribute('data-role', 'realtime-system-state');
+        statusPanel.appendChild(this.makeRuntimeStatusRow('slam', 'SLAM'));
+        statusPanel.appendChild(this.makeRuntimeStatusRow('livox', 'Livox'));
+        statusPanel.appendChild(this.makeRuntimeStatusRow('record', 'Record'));
+        section.appendChild(statusPanel);
 
         const connectBtn = makeButton('Connect', () => {
             const url = rosInput.value.trim();
@@ -96,6 +118,18 @@ export class RealtimeViewer extends Viewer {
             connectBtn.textContent = 'Reconnect';
         });
         section.appendChild(connectBtn);
+
+        const startBtn = makeButton('Start SLAM', () => {
+            this.sendSwitchRequest(true);
+        });
+        startBtn.setAttribute('data-role', 'realtime-start-slam');
+        section.appendChild(startBtn);
+
+        const endBtn = makeButton('End SLAM', () => {
+            this.sendSwitchRequest(false);
+        });
+        endBtn.setAttribute('data-role', 'realtime-end-slam');
+        section.appendChild(endBtn);
 
         const itemSelect = this.settingsItemSelect?.closest('.q3d-material-select') as HTMLElement | null;
         const itemLabel = this.settingsPanel.querySelector('[data-role="settings-item-label"]') as HTMLElement | null;
@@ -107,12 +141,39 @@ export class RealtimeViewer extends Viewer {
             this.settingsPanel.insertBefore(section, this.settingsContent);
         }
         this.syncRealtimeControls();
+        this.updateAllRuntimeStatus('unknown');
+    }
+
+    private makeRuntimeStatusRow(kind: 'slam' | 'livox' | 'record', label: string): HTMLElement {
+        const row = document.createElement('div');
+        row.className = 'q3d-slam-status';
+        row.setAttribute('data-role', `realtime-${kind}-state`);
+
+        const name = document.createElement('span');
+        name.className = 'q3d-slam-status-name md-typescale-body-medium';
+        name.textContent = label;
+
+        const led = document.createElement('span');
+        led.className = 'q3d-slam-led q3d-slam-led--unknown';
+        led.setAttribute('data-role', `realtime-${kind}-led`);
+
+        const text = document.createElement('span');
+        text.className = 'q3d-slam-status-text md-typescale-body-medium';
+        text.textContent = 'Unknown';
+        text.setAttribute('data-role', `realtime-${kind}-status-text`);
+
+        row.appendChild(name);
+        row.appendChild(led);
+        row.appendChild(text);
+
+        this.statusLedElements[kind] = led;
+        this.statusTextElements[kind] = text;
+        return row;
     }
 
     private syncRealtimeControls(): void {
         if (this.rosUrlInput) this.rosUrlInput.value = this.rosbridgeUrl;
-        if (this.cloudTopicInput) this.cloudTopicInput.value = this.cloudTopicName;
-        if (this.odomTopicInput) this.odomTopicInput.value = this.odomTopicName;
+        if (this.autoRecordInput) this.autoRecordInput.checked = this.autoRecord;
         if (this.maxScanInput) this.maxScanInput.value = this.maxPointsPerScan.toString();
         if (this.maxCloudInput) this.maxCloudInput.value = this.realtimeMaxPoints.toString();
     }
@@ -134,9 +195,7 @@ export class RealtimeViewer extends Viewer {
 
     setRealtimeOptions(options: RealtimeUrlOptions): void {
         if (options.rosbridgeUrl) this.rosbridgeUrl = options.rosbridgeUrl;
-        const cloudTopic = options.cloudTopicName ?? options.topicName;
-        if (cloudTopic) this.cloudTopicName = cloudTopic;
-        if (options.odomTopicName) this.odomTopicName = options.odomTopicName;
+        if (typeof options.autoRecord === 'boolean') this.autoRecord = options.autoRecord;
         if (typeof options.maxPointsPerScan === 'number' && options.maxPointsPerScan > 0) {
             this.maxPointsPerScan = Math.floor(options.maxPointsPerScan);
         }
@@ -185,6 +244,9 @@ export class RealtimeViewer extends Viewer {
             };
             socket.send(JSON.stringify(cloudSubscribe));
             socket.send(JSON.stringify(odomSubscribe));
+            this.updateAllRuntimeStatus('unknown', 'Checking...');
+            this.startSlamStatusPolling();
+            this.querySlamStatus();
         });
 
         socket.addEventListener('message', (event: MessageEvent<string>) => {
@@ -193,6 +255,8 @@ export class RealtimeViewer extends Viewer {
 
         socket.addEventListener('close', () => {
             if (this.rosSocket === socket) this.rosSocket = null;
+            this.stopSlamStatusPolling();
+            this.updateAllRuntimeStatus('unknown');
         });
 
         socket.addEventListener('error', (err) => {
@@ -209,6 +273,8 @@ export class RealtimeViewer extends Viewer {
         }
         this.rosSocket.close();
         this.rosSocket = null;
+        this.stopSlamStatusPolling();
+        this.updateAllRuntimeStatus('unknown');
     }
 
     ingestPointCloud2(pointCloud2: PointCloud2Json, options: RealtimeTopicOptions = {}): void {
@@ -258,26 +324,210 @@ export class RealtimeViewer extends Viewer {
     }
 
     private onRosbridgeMessage(rawData: string, options: RealtimeTopicOptions): void {
-        let payload: RosbridgePublishMessage;
+        let payload: RosbridgePublishMessage | RosbridgeServiceResponseMessage;
         try {
-            payload = JSON.parse(rawData) as RosbridgePublishMessage;
+            payload = JSON.parse(rawData) as RosbridgePublishMessage | RosbridgeServiceResponseMessage;
         } catch {
             return;
         }
 
-        if (payload.op !== 'publish' || !payload.topic || !payload.msg) {
+        if (payload.op === 'service_response') {
+            this.onServiceResponse(payload as RosbridgeServiceResponseMessage);
             return;
         }
 
-        if (payload.topic === this.cloudTopicName) {
-            const pointCloud2 = payload.msg as PointCloud2Json;
+        if (payload.op !== 'publish') {
+            return;
+        }
+
+        const publishPayload = payload as RosbridgePublishMessage;
+        if (!publishPayload.topic || !publishPayload.msg) return;
+
+        if (publishPayload.topic === this.cloudTopicName) {
+            const pointCloud2 = publishPayload.msg as PointCloud2Json;
             this.ingestPointCloud2(pointCloud2, options);
             return;
         }
 
-        if (payload.topic === this.odomTopicName) {
-            this.ingestOdometry(payload.msg as OdomJson);
+        if (publishPayload.topic === this.odomTopicName) {
+            this.ingestOdometry(publishPayload.msg as OdomJson);
         }
+    }
+
+    private sendSwitchRequest(switchOn: boolean): void {
+        if (!switchOn) {
+            this.resetRealtimeCloudItems();
+        }
+
+        if (!this.rosSocket || this.rosSocket.readyState !== WebSocket.OPEN) {
+            if (this.statusElement) {
+                this.statusElement.textContent = 'ROS bridge is not connected. Press Connect first.';
+            }
+            return;
+        }
+
+        this.sendSwitchRequestWithService(switchOn, this.controlServiceName);
+    }
+
+    private sendSwitchRequestWithService(switchOn: boolean, serviceName: string): void {
+        if (!this.rosSocket || this.rosSocket.readyState !== WebSocket.OPEN) return;
+
+        const fallbackServiceName = this.getAlternateServiceName(serviceName);
+
+        const id = `switch-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+        this.pendingServiceRequests.set(id, {
+            action: switchOn ? 'start' : 'end',
+            switchOn,
+            serviceName,
+            fallbackServiceName,
+        });
+        const request = {
+            op: 'call_service',
+            service: serviceName,
+            args: {
+                switch: switchOn,
+                record: this.autoRecord,
+            },
+            id,
+        };
+        this.rosSocket.send(JSON.stringify(request));
+        this.updateRuntimeStatus('slam', 'unknown', switchOn ? 'Starting...' : 'Stopping...');
+        if (this.statusElement) {
+            this.statusElement.textContent = switchOn
+                ? `Starting SLAM via ${serviceName}...`
+                : `Ending SLAM via ${serviceName}...`;
+        }
+    }
+
+    private getAlternateServiceName(serviceName: string): string | null {
+        const trimmed = serviceName.trim();
+        if (!trimmed) return null;
+        return trimmed.startsWith('/') ? trimmed.slice(1) : `/${trimmed}`;
+    }
+
+    private deriveStatusServiceName(): string {
+        const control = this.controlServiceName.trim();
+        if (!control) return this.statusServiceName;
+        if (control.endsWith('/switch')) {
+            return `${control.slice(0, -'/switch'.length)}/status`;
+        }
+        return this.statusServiceName;
+    }
+
+    private startSlamStatusPolling(): void {
+        this.stopSlamStatusPolling();
+        this.statusPollTimer = window.setInterval(() => {
+            this.querySlamStatus();
+        }, this.statusPollIntervalMs);
+    }
+
+    private stopSlamStatusPolling(): void {
+        if (this.statusPollTimer !== null) {
+            window.clearInterval(this.statusPollTimer);
+            this.statusPollTimer = null;
+        }
+        this.pendingStatusRequestIds.clear();
+    }
+
+    private querySlamStatus(): void {
+        if (!this.rosSocket || this.rosSocket.readyState !== WebSocket.OPEN) return;
+        if (this.pendingStatusRequestIds.size > 0) return;
+
+        const id = `status-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+        this.pendingStatusRequestIds.add(id);
+        const request = {
+            op: 'call_service',
+            service: this.deriveStatusServiceName(),
+            args: {},
+            id,
+        };
+        this.rosSocket.send(JSON.stringify(request));
+    }
+
+    private updateRuntimeStatus(kind: 'slam' | 'livox' | 'record', state: 'running' | 'stopped' | 'unknown', text?: string): void {
+        const led = this.statusLedElements[kind];
+        const label = this.statusTextElements[kind];
+        if (!led || !label) return;
+
+        led.classList.remove('q3d-slam-led--running', 'q3d-slam-led--stopped', 'q3d-slam-led--unknown');
+        if (state === 'running') {
+            led.classList.add('q3d-slam-led--running');
+            label.textContent = text ?? 'Running';
+            return;
+        }
+        if (state === 'stopped') {
+            led.classList.add('q3d-slam-led--stopped');
+            label.textContent = text ?? 'Stopped';
+            return;
+        }
+
+        led.classList.add('q3d-slam-led--unknown');
+        label.textContent = text ?? 'Unknown';
+    }
+
+    private updateAllRuntimeStatus(state: 'running' | 'stopped' | 'unknown', text?: string): void {
+        this.updateRuntimeStatus('slam', state, text);
+        this.updateRuntimeStatus('livox', state, text);
+        this.updateRuntimeStatus('record', state, text);
+    }
+
+    private onServiceResponse(payload: RosbridgeServiceResponseMessage): void {
+        const responseId = payload.id;
+        if (responseId && this.pendingStatusRequestIds.has(responseId)) {
+            this.pendingStatusRequestIds.delete(responseId);
+            if (payload.result !== true || !payload.values) {
+                this.updateAllRuntimeStatus('unknown');
+                return;
+            }
+
+            const values = payload.values as Record<string, unknown>;
+            this.updateRuntimeStatus('slam', values.slam === true ? 'running' : 'stopped');
+            this.updateRuntimeStatus('livox', values.livox === true ? 'running' : 'stopped');
+            this.updateRuntimeStatus('record', values.record === true ? 'running' : 'stopped');
+            return;
+        }
+
+        if (!responseId || !this.pendingServiceRequests.has(responseId)) return;
+
+        const requestInfo = this.pendingServiceRequests.get(responseId);
+        if (!requestInfo) return;
+
+        const { action, switchOn, serviceName, fallbackServiceName } = requestInfo;
+        this.pendingServiceRequests.delete(responseId);
+        const ok = payload.result === true && payload.values?.success === true;
+
+        if (!ok && fallbackServiceName && fallbackServiceName !== serviceName) {
+            this.sendSwitchRequestWithService(switchOn, fallbackServiceName);
+            if (this.statusElement) {
+                this.statusElement.textContent =
+                    `SLAM ${action} failed via ${serviceName}. Retrying via ${fallbackServiceName}...`;
+            }
+            return;
+        }
+
+        if (this.statusElement) {
+            this.statusElement.textContent = ok
+                ? `SLAM ${action} request succeeded via ${serviceName}.`
+                : `SLAM ${action} request failed via ${serviceName}.`;
+        }
+        this.querySlamStatus();
+    }
+
+    private resetRealtimeCloudItems(): void {
+        const map = this.items[this.mapItemName];
+        if (map instanceof NativeCloudItem) {
+            map.reset(this.realtimeMaxPoints);
+        }
+
+        const scan = this.items[this.scanItemName];
+        if (scan instanceof CloudItem) {
+            scan.replacePoints(new Float32Array(0), new Float32Array(0), undefined);
+            scan.replacePoints(new Float32Array(0), new Float32Array(0), undefined);
+        }
+
+        this.pendingChunks = [];
+        this.pendingScanChunk = null;
+        this.requestRender();
     }
 
     private setupRealtimeItems(): void {

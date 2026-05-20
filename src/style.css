@@ -337,6 +337,63 @@ body {
   font-weight: 600;
 }
 
+.q3d-runtime-status {
+  width: 100%;
+  box-sizing: border-box;
+  background: #1f1f1f;
+  border: 1px solid #3f3f3f;
+  border-radius: 12px;
+  margin-bottom: 7px;
+  padding: 4px 8px;
+}
+
+.q3d-slam-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  box-sizing: border-box;
+  background: transparent;
+  color: #eee;
+  border: none;
+  border-radius: 0;
+  margin-bottom: 0;
+  padding: 2px 2px;
+}
+
+.q3d-slam-status-name {
+  width: 52px;
+  color: #cfd0d1;
+}
+
+.q3d-slam-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18) inset;
+}
+
+.q3d-slam-led--running {
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.75);
+}
+
+.q3d-slam-led--stopped {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.65);
+}
+
+.q3d-slam-led--unknown {
+  background: #9ca3af;
+}
+
+.q3d-slam-status-text {
+  margin-left: auto;
+  color: #ddd;
+}
+
 .q3d-keyframe-list {
   max-height: 180px;
   overflow-y: auto;

@@ -35,6 +35,8 @@ export interface RealtimeTopicOptions {
     topicName?: string;
     cloudTopicName?: string;
     odomTopicName?: string;
+    controlServiceName?: string;
+    autoRecord?: boolean;
     maxPointsPerScan?: number;
     maxAccumulatedPoints?: number;
     autoFitOnFirstChunk?: boolean;
@@ -47,4 +49,12 @@ export interface OdomJson {
             orientation?: { x?: number; y?: number; z?: number; w?: number };
         };
     };
+}
+
+export interface RosbridgeServiceResponseMessage {
+    op?: string;
+    id?: string;
+    service?: string;
+    values?: Record<string, unknown>;
+    result?: boolean;
 }
