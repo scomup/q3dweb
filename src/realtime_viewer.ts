@@ -40,8 +40,8 @@ export class RealtimeViewer extends Viewer {
         fallbackServiceName: string | null;
     }>();
     private readonly pendingStatusRequestIds = new Set<string>();
-    private readonly statusLedElements: Partial<Record<'slam' | 'livox' | 'record', HTMLSpanElement>> = {};
-    private readonly statusTextElements: Partial<Record<'slam' | 'livox' | 'record', HTMLSpanElement>> = {};
+    private readonly statusLedElements: Partial<Record<'slam' | 'livox' | 'record' | 'camera', HTMLSpanElement>> = {};
+    private readonly statusTextElements: Partial<Record<'slam' | 'livox' | 'record' | 'camera', HTMLSpanElement>> = {};
     private statusPollTimer: number | null = null;
     private readonly statusPollIntervalMs = 1000;
     private mapColorMode: ColorMode | null = null;
@@ -108,6 +108,7 @@ export class RealtimeViewer extends Viewer {
         statusPanel.appendChild(this.makeRuntimeStatusRow('slam', 'SLAM'));
         statusPanel.appendChild(this.makeRuntimeStatusRow('livox', 'Livox'));
         statusPanel.appendChild(this.makeRuntimeStatusRow('record', 'Record'));
+        statusPanel.appendChild(this.makeRuntimeStatusRow('camera', 'Camera'));
         section.appendChild(statusPanel);
 
         const connectBtn = makeButton('Connect', () => {
@@ -144,7 +145,7 @@ export class RealtimeViewer extends Viewer {
         this.updateAllRuntimeStatus('unknown');
     }
 
-    private makeRuntimeStatusRow(kind: 'slam' | 'livox' | 'record', label: string): HTMLElement {
+    private makeRuntimeStatusRow(kind: 'slam' | 'livox' | 'record' | 'camera', label: string): HTMLElement {
         const row = document.createElement('div');
         row.className = 'q3d-slam-status';
         row.setAttribute('data-role', `realtime-${kind}-state`);
@@ -444,7 +445,7 @@ export class RealtimeViewer extends Viewer {
         this.rosSocket.send(JSON.stringify(request));
     }
 
-    private updateRuntimeStatus(kind: 'slam' | 'livox' | 'record', state: 'running' | 'stopped' | 'unknown', text?: string): void {
+    private updateRuntimeStatus(kind: 'slam' | 'livox' | 'record' | 'camera', state: 'running' | 'stopped' | 'unknown', text?: string): void {
         const led = this.statusLedElements[kind];
         const label = this.statusTextElements[kind];
         if (!led || !label) return;
@@ -469,6 +470,7 @@ export class RealtimeViewer extends Viewer {
         this.updateRuntimeStatus('slam', state, text);
         this.updateRuntimeStatus('livox', state, text);
         this.updateRuntimeStatus('record', state, text);
+        this.updateRuntimeStatus('camera', state, text);
     }
 
     private onServiceResponse(payload: RosbridgeServiceResponseMessage): void {
@@ -484,6 +486,7 @@ export class RealtimeViewer extends Viewer {
             this.updateRuntimeStatus('slam', values.slam === true ? 'running' : 'stopped');
             this.updateRuntimeStatus('livox', values.livox === true ? 'running' : 'stopped');
             this.updateRuntimeStatus('record', values.record === true ? 'running' : 'stopped');
+            this.updateRuntimeStatus('camera', values.camera === true ? 'running' : 'stopped');
             return;
         }
 

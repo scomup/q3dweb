@@ -256,7 +256,7 @@ describe('RealtimeViewer streaming workflow', () => {
       id: statusRequest.id,
       service: '/web_mapping_manager/status',
       result: true,
-      values: { slam: true, livox: false, record: false },
+      values: { slam: true, livox: false, record: false, camera: true },
     }));
 
     expect(led.classList.contains('q3d-slam-led--running')).toBe(true);
@@ -268,7 +268,7 @@ describe('RealtimeViewer streaming workflow', () => {
       id: statusRequest2.id,
       service: '/web_mapping_manager/status',
       result: true,
-      values: { slam: false, livox: false, record: false },
+      values: { slam: false, livox: false, record: false, camera: false },
     }));
 
     expect(led.classList.contains('q3d-slam-led--stopped')).toBe(true);
