@@ -21,7 +21,7 @@ import type {
  */
 export class RealtimeViewer extends Viewer {
     private rosSocket: WebSocket | null = null;
-    private rosbridgeUrl: string = 'ws://localhost:9090';
+    private rosbridgeUrl: string = `ws://${window.location.hostname}:9090`;
     private cloudTopicName: string = '/cloud_registered';
     private odomTopicName: string = '/odometry';
     private maxPointsPerScan: number = 1500;
