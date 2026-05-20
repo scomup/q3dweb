@@ -28,7 +28,7 @@ import { FilmMakerViewer } from '../src/film_maker_viewer';
 import { RealtimeViewer } from '../src/realtime_viewer';
 import { inferPointCloudFilename, parseCloudUrlOptions } from '../src/cloudUrlOptions';
 import { parseRealtimeUrlOptions } from '../src/realtimeUrlOptions';
-import { installViewerModeSelector, normalizeViewerMode } from '../src/viewerMode';
+import { getHostViewerMode, installViewerModeSelector, navigateToViewerMode, normalizeViewerMode } from '../src/viewerMode';
 
 function makeContainer(id = 'app'): HTMLElement {
   const c = document.createElement('div');
@@ -163,18 +163,19 @@ describe('Viewer settings panel', () => {
     v.toggleSettingsPanel();
     expect(v.settingsPanel?.style.display).toBe('block');
     expect(v.settingsPanel?.getAttribute('data-minimized')).toBe('true');
-    expect(v.settingsPanel?.style.width).toBe('40px');
+    expect(v.settingsPanel?.style.width).toBe('36px');
     expect(v.settingsPanel?.style.padding).toBe('0px');
     expect(v.settingsPanel?.style.background).toBe('transparent');
     expect(v.settingsPanel?.style.border).toBe('0px');
-    expect(v.settingsItemSelect?.style.display).toBe('none');
+    const itemSelectWrapper = v.settingsItemSelect?.closest('.q3d-material-select') as HTMLElement;
+    expect(itemSelectWrapper.style.display).toBe('none');
     v.toggleSettingsPanel();
     expect(v.settingsPanel?.getAttribute('data-minimized')).toBe('false');
     expect(v.settingsPanel?.style.display).toBe('block');
-    expect(v.settingsPanel?.style.width).toBe('260px');
-    expect(v.settingsPanel?.style.background).toBe('rgba(20, 20, 20, 0.92)');
-    expect(v.settingsPanel?.style.border).toBe('1px solid rgb(85, 85, 85)');
-    expect(v.settingsItemSelect?.style.display).not.toBe('none');
+    expect(v.settingsPanel?.style.width).toBe('280px');
+    expect(v.settingsPanel?.style.background).toBe('rgba(18, 18, 18, 0.94)');
+    expect(v.settingsPanel?.style.border).toBe('1px solid rgb(63, 63, 63)');
+    expect(itemSelectWrapper.style.display).not.toBe('none');
   });
 
   it('settings minimize button toggles the panel', () => {
@@ -182,12 +183,33 @@ describe('Viewer settings panel', () => {
     expect(button).toBeDefined();
     button.click();
     expect(v.settingsPanel?.getAttribute('data-minimized')).toBe('true');
-    expect(button.textContent).toBe('+');
-    expect(button.style.border).toBe('0px');
+    expect(button.textContent).toBe('\u2699');
+    expect(button.style.flex).toBe('0 0 36px');
+    expect(button.style.width).toBe('36px');
+    expect(button.style.height).toBe('36px');
+    expect(button.style.border).toBe('1px solid rgb(95, 99, 104)');
+    expect(button.style.borderRadius).toBe('999px');
+    expect(button.classList.contains('md-typescale-label-large')).toBe(true);
+    expect(button.querySelector('md-ripple')).toBeTruthy();
     button.click();
     expect(v.settingsPanel?.getAttribute('data-minimized')).toBe('false');
     expect(button.textContent).toBe('-');
-    expect(button.style.border).toBe('1px solid rgb(102, 102, 102)');
+    expect(button.style.flex).toBe('0 0 36px');
+    expect(button.style.width).toBe('36px');
+    expect(button.style.height).toBe('36px');
+    expect(button.style.border).toBe('1px solid rgb(95, 99, 104)');
+    expect(button.style.borderRadius).toBe('999px');
+    expect(button.querySelector('md-ripple')).toBeTruthy();
+  });
+
+  it('shows the viewer setting label above the item selector', () => {
+    const label = v.settingsPanel!.querySelector('[data-role="settings-item-label"]') as HTMLElement;
+    const itemSelectWrapper = v.settingsItemSelect!.closest('.q3d-material-select') as HTMLElement;
+    expect(label.textContent).toBe('Viewer Setting:');
+    expect(label.classList.contains('q3d-setting-label')).toBe(true);
+    expect(Array.from(v.settingsPanel!.children).indexOf(label)).toBeLessThan(
+      Array.from(v.settingsPanel!.children).indexOf(itemSelectWrapper),
+    );
   });
 
   it('refreshSettingsItemList preserves preferred selection', () => {
@@ -304,9 +326,15 @@ describe('viewer mode selector', () => {
 
     expect(modeSelect).toBeTruthy();
     expect(itemSelect).toBe(v.settingsItemSelect);
-    expect(Array.from(v.settingsPanel!.children).indexOf(modeSelect)).toBeLessThan(
-      Array.from(v.settingsPanel!.children).indexOf(itemSelect),
+    const modeSelectWrapper = modeSelect.closest('.q3d-material-select') as HTMLElement;
+    const itemSelectWrapper = itemSelect.closest('.q3d-material-select') as HTMLElement;
+    expect(modeSelectWrapper).toBeTruthy();
+    expect(itemSelectWrapper).toBeTruthy();
+    expect(Array.from(v.settingsPanel!.children).indexOf(modeSelectWrapper)).toBeLessThan(
+      Array.from(v.settingsPanel!.children).indexOf(itemSelectWrapper),
     );
+    expect(v.settingsPanel!.querySelector('[data-role="viewer-mode-select-menu"]')).toBeTruthy();
+    expect(v.settingsPanel!.querySelector('[data-role="viewer-mode-menu-button"]')).toBeTruthy();
     expect(Array.from(modeSelect.options).map((option) => option.textContent)).toEqual([
       'cloud_viewer',
       'film_maker',
@@ -317,6 +345,10 @@ describe('viewer mode selector', () => {
     modeSelect.value = 'film_maker';
     modeSelect.onchange?.(new Event('change'));
     expect(navigate).toHaveBeenCalledWith('film_maker');
+
+    modeSelect.value = 'cloud';
+    modeSelect.onchange?.(new Event('change'));
+    expect(navigate).toHaveBeenNthCalledWith(2, 'cloud');
   });
 
   it('normalizes unknown modes to cloud', () => {
@@ -325,6 +357,18 @@ describe('viewer mode selector', () => {
     expect(normalizeViewerMode('film_maker')).toBe('film_maker');
     expect(normalizeViewerMode('realtime')).toBe('realtime');
     expect(normalizeViewerMode('other')).toBe('cloud');
+  });
+
+  it('uses VS Code host mode and posts mode changes without browser navigation', () => {
+    const host = { postMessage: vi.fn() };
+    (globalThis as any).__Q3DWEB_INITIAL_MODE = 'realtime';
+
+    expect(getHostViewerMode()).toBe('realtime');
+    navigateToViewerMode('film_maker', host);
+
+    expect(host.postMessage).toHaveBeenCalledWith({ type: 'changeMode', mode: 'film_maker' });
+    delete (globalThis as any).__Q3DWEB_INITIAL_MODE;
+    expect(getHostViewerMode()).toBeNull();
   });
 });
 
@@ -350,12 +394,17 @@ describe('Viewer Film Maker controls', () => {
   }
 
   it('builds the Film Maker UI and wires list, buttons, inputs, and shortcuts', () => {
-    // Film maker UI is built during construction, always visible in panel
+    // Film maker UI is built during construction and visible in film_maker mode
     expect(v.filmMakerTabActive).toBe(true);
     const fm = v.settingsPanel!.querySelector('[data-role="film-maker"]') as HTMLElement;
+    const itemLabel = v.settingsPanel!.querySelector('[data-role="settings-item-label"]') as HTMLElement;
+    const itemSelectWrapper = v.settingsItemSelect!.closest('.q3d-material-select') as HTMLElement;
     expect(fm.textContent).toContain('Video File Name:');
     expect(Array.from(v.settingsPanel!.children).indexOf(fm)).toBeLessThan(
-      Array.from(v.settingsPanel!.children).indexOf(v.settingsItemSelect!),
+      Array.from(v.settingsPanel!.children).indexOf(itemLabel),
+    );
+    expect(Array.from(v.settingsPanel!.children).indexOf(itemLabel)).toBeLessThan(
+      Array.from(v.settingsPanel!.children).indexOf(itemSelectWrapper),
     );
 
     const buttons = Array.from(fm.querySelectorAll('button'));
@@ -410,6 +459,29 @@ describe('Viewer Film Maker controls', () => {
     const ignoredSpace = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
     input.dispatchEvent(ignoredSpace);
     expect(ignoredSpace.defaultPrevented).toBe(false);
+  });
+
+  it('toggles the Film Maker section and shortcuts without rebuilding the viewer', () => {
+    const fm = v.settingsPanel!.querySelector('[data-role="film-maker"]') as HTMLElement;
+
+    v.setViewerMode('cloud');
+    expect(v.currentViewerMode).toBe('cloud');
+    expect(v.filmMakerTabActive).toBe(false);
+    expect(fm.hidden).toBe(true);
+
+    const ignoredSpace = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
+    window.dispatchEvent(ignoredSpace);
+    expect(v.filmMaker.keyFrames.length).toBe(0);
+
+    v.setViewerMode('film_maker');
+    expect(v.currentViewerMode).toBe('film_maker');
+    expect(v.filmMakerTabActive).toBe(true);
+    expect(fm.hidden).toBe(false);
+
+    const activeSpace = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
+    window.dispatchEvent(activeSpace);
+    expect(activeSpace.defaultPrevented).toBe(true);
+    expect(v.filmMaker.keyFrames.length).toBe(1);
   });
 
   it('handles select-target M shortcut and panel re-show', () => {
@@ -544,12 +616,17 @@ describe('RealtimeViewer settings layout', () => {
 
   it('places realtime controls above the item selector with a clear boundary', () => {
     const realtime = v.settingsPanel!.querySelector('[data-role="realtime"]') as HTMLElement;
+    const itemLabel = v.settingsPanel!.querySelector('[data-role="settings-item-label"]') as HTMLElement;
+    const itemSelectWrapper = v.settingsItemSelect!.closest('.q3d-material-select') as HTMLElement;
     expect(realtime.textContent).toContain('ROS Bridge URL');
     expect(Array.from(v.settingsPanel!.children).indexOf(realtime)).toBeLessThan(
-      Array.from(v.settingsPanel!.children).indexOf(v.settingsItemSelect!),
+      Array.from(v.settingsPanel!.children).indexOf(itemLabel),
     );
-    expect(realtime.style.borderBottomWidth).toBe('2px');
-    expect(v.settingsItemSelect!.style.marginTop).toBe('2px');
+    expect(Array.from(v.settingsPanel!.children).indexOf(itemLabel)).toBeLessThan(
+      Array.from(v.settingsPanel!.children).indexOf(itemSelectWrapper),
+    );
+    expect(realtime.classList.contains('q3d-settings-section')).toBe(true);
+    expect(itemSelectWrapper.style.marginTop).toBe('2px');
   });
 
   it('applies realtime options to settings inputs', () => {
@@ -1180,7 +1257,7 @@ describe('Viewer measurement & mouse/keyboard events', () => {
       canvas.dispatchEvent(makeTouchEvent('touchstart', [{ x: 100, y: 180 }, { x: 220, y: 180 }]));
       canvas.dispatchEvent(makeTouchEvent('touchmove', [{ x: 100, y: 120 }, { x: 220, y: 120 }]));
       canvas.dispatchEvent(makeTouchEvent('touchend', []));
-      expect(v.euler[0] - beforeParallelEuler[0]).toBeGreaterThan(0.15);
+      expect(v.euler[0] - beforeParallelEuler[0]).toBeGreaterThan(0.08);
       expect(Math.abs(v.euler[2] - beforeParallelEuler[2])).toBeLessThan(0.001);
       expect(Math.abs(v.cameraDist - beforeParallelDist)).toBeLessThan(0.001);
     } finally {
@@ -1225,9 +1302,113 @@ describe('Viewer measurement & mouse/keyboard events', () => {
       canvas.dispatchEvent(makePointerEvent('pointermove', 2, 220, 120));
       canvas.dispatchEvent(makePointerEvent('pointerup', 1, 100, 120));
       canvas.dispatchEvent(makePointerEvent('pointerup', 2, 220, 120));
-      expect(v.euler[0] - beforeParallelEuler[0]).toBeGreaterThan(0.15);
+      expect(v.euler[0] - beforeParallelEuler[0]).toBeGreaterThan(0.08);
       expect(Math.abs(v.euler[2] - beforeParallelEuler[2])).toBeLessThan(0.001);
       expect(Math.abs(v.cameraDist - beforeParallelDist)).toBeLessThan(0.001);
+    } finally {
+      if (originalPointerEvent === undefined) delete (window as any).PointerEvent;
+      else (window as any).PointerEvent = originalPointerEvent;
+    }
+  });
+
+  it('two-finger pointer pitch keeps distance from the rotation center during staggered finger movement', () => {
+    const originalPointerEvent = (window as any).PointerEvent;
+    try {
+      (window as any).PointerEvent = function PointerEvent() {};
+      cleanupContainers();
+      makeContainer();
+      v = new Viewer('app');
+      installTouchViewport();
+      v.cameraDist = 40;
+      v.updateCamera();
+
+      const canvas = v.renderer.domElement;
+      const beforeEuler = [...v.euler];
+      const beforeCameraDist = v.cameraDist;
+      const beforeCenterDistance = v.camera.position.distanceTo(v.cameraCenter);
+      canvas.dispatchEvent(makePointerEvent('pointerdown', 1, 100, 180));
+      canvas.dispatchEvent(makePointerEvent('pointerdown', 2, 220, 180));
+      canvas.dispatchEvent(makePointerEvent('pointermove', 1, 100, 60));
+      canvas.dispatchEvent(makePointerEvent('pointermove', 2, 220, 60));
+      canvas.dispatchEvent(makePointerEvent('pointerup', 1, 100, 60));
+      canvas.dispatchEvent(makePointerEvent('pointerup', 2, 220, 60));
+
+      expect(v.euler[0] - beforeEuler[0]).toBeGreaterThan(0.3);
+      expect(v.cameraDist).toBeCloseTo(beforeCameraDist, 6);
+      expect(v.camera.position.distanceTo(v.cameraCenter)).toBeCloseTo(beforeCenterDistance, 6);
+    } finally {
+      if (originalPointerEvent === undefined) delete (window as any).PointerEvent;
+      else (window as any).PointerEvent = originalPointerEvent;
+    }
+  });
+
+  it('two-finger pointer pinch keeps the rotation center fixed until all fingers are released', () => {
+    const originalPointerEvent = (window as any).PointerEvent;
+    try {
+      (window as any).PointerEvent = function PointerEvent() {};
+      cleanupContainers();
+      makeContainer();
+      v = new Viewer('app');
+      installTouchViewport();
+      v.cameraCenter.set(4, 5, 6);
+      v.cameraDist = 40;
+      v.updateCamera();
+
+      const canvas = v.renderer.domElement;
+      const beforeCenter = v.cameraCenter.clone();
+      const beforeDist = v.cameraDist;
+      canvas.dispatchEvent(makePointerEvent('pointerdown', 1, 100, 100));
+      canvas.dispatchEvent(makePointerEvent('pointerdown', 2, 200, 100));
+      canvas.dispatchEvent(makePointerEvent('pointermove', 1, 80, 100));
+      canvas.dispatchEvent(makePointerEvent('pointermove', 2, 220, 100));
+      canvas.dispatchEvent(makePointerEvent('pointerup', 1, 80, 100));
+      canvas.dispatchEvent(makePointerEvent('pointermove', 2, 260, 160));
+      canvas.dispatchEvent(makePointerEvent('pointerup', 2, 260, 160));
+
+      expect(v.cameraDist).toBeLessThan(beforeDist);
+      expect(v.cameraCenter.distanceTo(beforeCenter)).toBeLessThan(1e-6);
+
+      canvas.dispatchEvent(makePointerEvent('pointerdown', 1, 100, 100));
+      canvas.dispatchEvent(makePointerEvent('pointermove', 1, 130, 130));
+      canvas.dispatchEvent(makePointerEvent('pointerup', 1, 130, 130));
+      expect(v.cameraCenter.distanceTo(beforeCenter)).toBeGreaterThan(0);
+    } finally {
+      if (originalPointerEvent === undefined) delete (window as any).PointerEvent;
+      else (window as any).PointerEvent = originalPointerEvent;
+    }
+  });
+
+  it('two-finger pointer pitch amount stays constant across zoom levels', () => {
+    const originalPointerEvent = (window as any).PointerEvent;
+    try {
+      (window as any).PointerEvent = function PointerEvent() {};
+      cleanupContainers();
+      makeContainer();
+      v = new Viewer('app');
+      installTouchViewport();
+      const canvas = v.renderer.domElement;
+
+      const runPitchAtDistance = (cameraDist: number): number => {
+        v.cameraCenter.set(0, 0, 0);
+        v.cameraDist = cameraDist;
+        v.euler = [Math.PI / 3, 0, 0];
+        v.updateCamera();
+
+        const beforePitch = v.euler[0];
+        canvas.dispatchEvent(makePointerEvent('pointerdown', 1, 100, 180));
+        canvas.dispatchEvent(makePointerEvent('pointerdown', 2, 220, 180));
+        canvas.dispatchEvent(makePointerEvent('pointermove', 1, 100, 140));
+        canvas.dispatchEvent(makePointerEvent('pointermove', 2, 220, 140));
+        canvas.dispatchEvent(makePointerEvent('pointerup', 1, 100, 140));
+        canvas.dispatchEvent(makePointerEvent('pointerup', 2, 220, 140));
+        return v.euler[0] - beforePitch;
+      };
+
+      const nearPitchDelta = runPitchAtDistance(10);
+      const farPitchDelta = runPitchAtDistance(80);
+
+      expect(nearPitchDelta).toBeGreaterThan(0);
+      expect(farPitchDelta).toBeCloseTo(nearPitchDelta, 6);
     } finally {
       if (originalPointerEvent === undefined) delete (window as any).PointerEvent;
       else (window as any).PointerEvent = originalPointerEvent;

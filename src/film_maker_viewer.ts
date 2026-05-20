@@ -1,8 +1,10 @@
 import { CloudViewer } from './cloud_viewer';
+import type { CloudUrlOptions } from './cloudUrlOptions';
 import { FilmMaker, KeyFrame } from './viewer/filmMaker';
 import { recoverCenterEuler } from './utils/maths';
 import {
     buildFilmMakerSettings, refreshFilmMakerList, syncFilmMakerSpinboxes, FilmMakerUIRefs,
+    setMaterialButtonLabel,
 } from './viewer/settingsUI';
 import {
     FilmPlaybackContext,
@@ -17,9 +19,11 @@ import {
  * add/delete/play/record controls) above the inherited item dropdown.
  */
 export class FilmMakerViewer extends CloudViewer {
+    private viewerMode: 'cloud' | 'film_maker' = 'film_maker';
     filmMaker: FilmMaker = new FilmMaker();
-    /** Always true — enables Space/Delete keyboard shortcuts for keyframe editing. */
-    get filmMakerTabActive(): boolean { return true; }
+    /** Enabled only while the film_maker mode is active. */
+    get filmMakerTabActive(): boolean { return this.viewerMode === 'film_maker'; }
+    get currentViewerMode(): 'cloud' | 'film_maker' { return this.viewerMode; }
     filmPlaybackIndex: number = 0;
     filmPlaybackRequestId: number | null = null;
     filmPlaybackLastTimestamp: number | null = null;
@@ -38,11 +42,14 @@ export class FilmMakerViewer extends CloudViewer {
     private filmMakerSpinLin: HTMLInputElement | null = null;
     private filmMakerSpinAng: HTMLInputElement | null = null;
     private filmMakerSpinStop: HTMLInputElement | null = null;
+    private filmMakerSection: HTMLElement | null = null;
 
-    constructor(containerId: string) {
-        super(containerId);
+    constructor(containerId: string, options: CloudUrlOptions = {}, initialMode: 'cloud' | 'film_maker' = 'film_maker') {
+        super(containerId, options);
+        this.viewerMode = initialMode;
         // Fields are now initialized — install the film maker section in the panel.
         this.installFilmMakerSection();
+        this.setViewerMode(initialMode);
     }
 
     /**
@@ -53,8 +60,9 @@ export class FilmMakerViewer extends CloudViewer {
     private installFilmMakerSection(): void {
         if (!this.settingsPanel || !this.settingsContent) return;
         const section = document.createElement('div');
-        section.style.cssText = 'margin-bottom:10px;padding-bottom:10px;border-bottom:2px solid #888;box-shadow:0 1px 0 rgba(0,0,0,0.9);';
+        section.className = 'q3d-settings-section';
         section.setAttribute('data-role', 'film-maker');
+        this.filmMakerSection = section;
         const refs: FilmMakerUIRefs = buildFilmMakerSettings(section, {
             filmMaker: this.filmMaker,
             isPlayingFilm: this.isPlayingFilm,
@@ -83,12 +91,21 @@ export class FilmMakerViewer extends CloudViewer {
         this.setFilmMakerPlayButtonState(this.isPlayingFilm);
         this.refreshFilmMakerListUI();
         syncFilmMakerSpinboxes(this.filmMaker, this.filmMakerSpinLin, this.filmMakerSpinAng, this.filmMakerSpinStop);
-        const itemSelect = this.settingsItemSelect;
-        if (itemSelect?.parentElement === this.settingsPanel) {
-            itemSelect.style.marginTop = '2px';
-            this.settingsPanel.insertBefore(section, itemSelect);
+        const itemSelect = this.settingsItemSelect?.closest('.q3d-material-select') as HTMLElement | null;
+        const itemLabel = this.settingsPanel.querySelector('[data-role="settings-item-label"]') as HTMLElement | null;
+        const anchor = itemLabel ?? itemSelect;
+        if (anchor?.parentElement === this.settingsPanel) {
+            if (itemSelect) itemSelect.style.marginTop = '2px';
+            this.settingsPanel.insertBefore(section, anchor);
         } else {
             this.settingsPanel.insertBefore(section, this.settingsContent);
+        }
+    }
+
+    setViewerMode(mode: 'cloud' | 'film_maker'): void {
+        this.viewerMode = mode;
+        if (this.filmMakerSection) {
+            this.filmMakerSection.hidden = mode !== 'film_maker';
         }
     }
 
@@ -147,7 +164,7 @@ export class FilmMakerViewer extends CloudViewer {
 
     setFilmMakerPlayButtonState(isPlaying: boolean): void {
         if (!this.filmMakerPlayBtn) return;
-        this.filmMakerPlayBtn.textContent = isPlaying ? 'Playing' : 'Play';
+        setMaterialButtonLabel(this.filmMakerPlayBtn, isPlaying ? 'Playing' : 'Play');
         this.filmMakerPlayBtn.style.backgroundColor = isPlaying ? '#a33' : '#333';
         this.filmMakerPlayBtn.style.color = isPlaying ? '#fff' : '#eee';
         this.filmMakerPlayBtn.style.borderColor = isPlaying ? '#d66' : '#666';

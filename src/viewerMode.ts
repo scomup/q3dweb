@@ -1,4 +1,5 @@
 import { makeLabel } from './viewer/settingsUI';
+import { createMaterialMenuSelect } from './viewer/materialSelect';
 
 export type ViewerMode = 'cloud' | 'film_maker' | 'realtime';
 
@@ -12,11 +13,24 @@ export interface ViewerModeSelectorHost {
     settingsPanel: HTMLElement | null;
 }
 
+export interface ViewerModeHostApi {
+    postMessage(message: { type: 'changeMode'; mode: ViewerMode }): void;
+}
+
 export function normalizeViewerMode(mode: string | null): ViewerMode {
     return mode === 'film_maker' || mode === 'realtime' ? mode : 'cloud';
 }
 
-export function navigateToViewerMode(mode: ViewerMode): void {
+export function getHostViewerMode(): ViewerMode | null {
+    const hostMode = (globalThis as { __Q3DWEB_INITIAL_MODE?: unknown }).__Q3DWEB_INITIAL_MODE;
+    return typeof hostMode === 'string' ? normalizeViewerMode(hostMode) : null;
+}
+
+export function navigateToViewerMode(mode: ViewerMode, host?: ViewerModeHostApi | null): void {
+    if (host) {
+        host.postMessage({ type: 'changeMode', mode });
+        return;
+    }
     const url = new URL(window.location.href);
     url.searchParams.set('mode', mode);
     window.location.assign(url.toString());
@@ -36,24 +50,23 @@ export function installViewerModeSelector(
     const label = makeLabel('Viewer Mode:');
     label.setAttribute('data-role', 'viewer-mode-label');
 
-    const select = document.createElement('select');
-    select.setAttribute('data-role', 'viewer-mode-select');
-    select.style.cssText = 'width:100%;margin-bottom:8px;background:#333;color:#eee;border:1px solid #666;padding:4px;border-radius:3px;';
-    for (const option of VIEWER_MODE_OPTIONS) {
-        const item = document.createElement('option');
-        item.value = option.value;
-        item.textContent = option.label;
-        select.appendChild(item);
-    }
-    select.value = currentMode;
-    select.onchange = () => {
-        const selectedMode = normalizeViewerMode(select.value);
-        if (selectedMode === currentMode) return;
+    let activeMode = currentMode;
+
+    const modeSelect = createMaterialMenuSelect(VIEWER_MODE_OPTIONS, currentMode, (value) => {
+        const selectedMode = normalizeViewerMode(value);
+        if (selectedMode === activeMode) return;
         navigate(selectedMode);
-    };
+        activeMode = selectedMode;
+    }, {
+        dataRole: 'viewer-mode-select',
+        menuDataRole: 'viewer-mode-select-menu',
+        buttonDataRole: 'viewer-mode-menu-button',
+        ariaLabel: 'Viewer mode',
+        className: 'q3d-viewer-mode-select',
+    });
 
     const anchor = panel.children[1] ?? null;
     panel.insertBefore(label, anchor);
-    panel.insertBefore(select, anchor);
-    return select;
+    panel.insertBefore(modeSelect.wrapper, anchor);
+    return modeSelect.select;
 }
