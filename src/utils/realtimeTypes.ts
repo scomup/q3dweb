@@ -25,12 +25,6 @@ export interface PointCloud2Json {
     is_dense: boolean;
 }
 
-export interface RosbridgePublishMessage {
-    op?: string;
-    topic?: string;
-    msg?: unknown;
-}
-
 export interface RealtimeTopicOptions {
     topicName?: string;
     cloudTopicName?: string;
@@ -51,10 +45,3 @@ export interface OdomJson {
     };
 }
 
-export interface RosbridgeServiceResponseMessage {
-    op?: string;
-    id?: string;
-    service?: string;
-    values?: Record<string, unknown>;
-    result?: boolean;
-}

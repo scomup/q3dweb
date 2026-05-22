@@ -4,6 +4,7 @@ import { CloudItem } from './items/CloudItem';
 import { AxisItem } from './items/AxisItem';
 import { NativeCloudItem } from './items/NativeCloudItem';
 import { decodePointCloud2, inferColorModeFromFields } from './utils/pointCloud2Decode';
+import { RosbridgeClient, Service, ServiceRequest, Topic } from './utils/rosbridgeClient';
 import { makeLabel, makeTextInput, makeNumberInput, makeButton, buildNativeCloudItemSettings } from './viewer/settingsUI';
 import type { RealtimeUrlOptions } from './realtimeUrlOptions';
 import type {
@@ -11,17 +12,28 @@ import type {
     DecodedCloudChunk,
     OdomJson,
     PointCloud2Json,
-    RosbridgeServiceResponseMessage,
     RealtimeTopicOptions,
-    RosbridgePublishMessage,
 } from './utils/realtimeTypes';
+
+interface SlamStatusValues {
+    slam?: boolean;
+    livox?: boolean;
+    record?: boolean;
+    camera?: boolean;
+}
+
+interface SlamSwitchValues {
+    success?: boolean;
+}
 
 /**
  * RealtimeViewer extends Viewer with ROS PointCloud2 realtime ingestion.
  * It is optimized for streaming append workloads instead of one-shot file loads.
  */
 export class RealtimeViewer extends Viewer {
-    private rosSocket: WebSocket | null = null;
+    private rosClient: RosbridgeClient | null = null;
+    private cloudTopic: Topic<PointCloud2Json> | null = null;
+    private odomTopic: Topic<OdomJson> | null = null;
     private rosbridgeUrl: string = `ws://${window.location.hostname}:9090`;
     private cloudTopicName: string = '/cloud_registered';
     private odomTopicName: string = '/odometry';
@@ -33,13 +45,7 @@ export class RealtimeViewer extends Viewer {
     private autoRecordInput: HTMLInputElement | null = null;
     private maxScanInput: HTMLInputElement | null = null;
     private maxCloudInput: HTMLInputElement | null = null;
-    private readonly pendingServiceRequests = new Map<string, {
-        action: 'start' | 'end';
-        switchOn: boolean;
-        serviceName: string;
-        fallbackServiceName: string | null;
-    }>();
-    private readonly pendingStatusRequestIds = new Set<string>();
+    private statusQueryInFlight = false;
     private readonly statusLedElements: Partial<Record<'slam' | 'livox' | 'record' | 'camera', HTMLSpanElement>> = {};
     private readonly statusTextElements: Partial<Record<'slam' | 'livox' | 'record' | 'camera', HTMLSpanElement>> = {};
     private statusPollTimer: number | null = null;
@@ -221,59 +227,75 @@ export class RealtimeViewer extends Viewer {
             map.setColorMode('FLAT');
         }
 
-        if (this.rosSocket && this.rosSocket.readyState <= WebSocket.OPEN) {
+        if (this.rosClient?.isActive()) {
             this.disconnectRosbridge();
         }
 
-        const socket = new WebSocket(wsUrl);
-        this.rosSocket = socket;
+        const client = new RosbridgeClient({ url: wsUrl });
+        const cloudTopic = new Topic<PointCloud2Json>(
+            client,
+            this.cloudTopicName,
+            'sensor_msgs/PointCloud2',
+            { queueLength: 1, throttleRate: 0 },
+        );
+        const odomTopic = new Topic<OdomJson>(
+            client,
+            this.odomTopicName,
+            'nav_msgs/Odometry',
+            { queueLength: 1, throttleRate: 0 },
+        );
+        this.rosClient = client;
+        this.cloudTopic = cloudTopic;
+        this.odomTopic = odomTopic;
+        this.statusQueryInFlight = false;
 
-        socket.addEventListener('open', () => {
-            const cloudSubscribe = {
-                op: 'subscribe',
-                topic: this.cloudTopicName,
-                type: 'sensor_msgs/PointCloud2',
-                queue_length: 1,
-                throttle_rate: 0,
-            };
-            const odomSubscribe = {
-                op: 'subscribe',
-                topic: this.odomTopicName,
-                type: 'nav_msgs/Odometry',
-                queue_length: 1,
-                throttle_rate: 0,
-            };
-            socket.send(JSON.stringify(cloudSubscribe));
-            socket.send(JSON.stringify(odomSubscribe));
+        client.onReady(() => {
+            cloudTopic.subscribe((pointCloud2) => {
+                if (this.rosClient !== client) return;
+                this.ingestPointCloud2(pointCloud2, options);
+            });
+            odomTopic.subscribe((odom) => {
+                if (this.rosClient !== client) return;
+                this.ingestOdometry(odom);
+            });
             this.updateAllRuntimeStatus('unknown', 'Checking...');
             this.startSlamStatusPolling();
             this.querySlamStatus();
         });
 
-        socket.addEventListener('message', (event: MessageEvent<string>) => {
-            this.onRosbridgeMessage(event.data, options);
-        });
-
-        socket.addEventListener('close', () => {
-            if (this.rosSocket === socket) this.rosSocket = null;
+        client.on('close', () => {
+            if (this.rosClient === client) {
+                this.rosClient = null;
+                this.cloudTopic = null;
+                this.odomTopic = null;
+            }
+            this.statusQueryInFlight = false;
             this.stopSlamStatusPolling();
             this.updateAllRuntimeStatus('unknown');
         });
 
-        socket.addEventListener('error', (err) => {
+        client.on('error', (err) => {
             console.error('rosbridge websocket error:', err);
         });
+
+        client.run();
     }
 
     disconnectRosbridge(): void {
-        if (!this.rosSocket) return;
+        const client = this.rosClient;
+        const cloudTopic = this.cloudTopic;
+        const odomTopic = this.odomTopic;
+        if (!client) return;
 
-        if (this.rosSocket.readyState === WebSocket.OPEN) {
-            this.rosSocket.send(JSON.stringify({ op: 'unsubscribe', topic: this.cloudTopicName }));
-            this.rosSocket.send(JSON.stringify({ op: 'unsubscribe', topic: this.odomTopicName }));
+        if (client.isOpen()) {
+            cloudTopic?.unsubscribe();
+            odomTopic?.unsubscribe();
         }
-        this.rosSocket.close();
-        this.rosSocket = null;
+        client.close();
+        this.rosClient = null;
+        this.cloudTopic = null;
+        this.odomTopic = null;
+        this.statusQueryInFlight = false;
         this.stopSlamStatusPolling();
         this.updateAllRuntimeStatus('unknown');
     }
@@ -324,43 +346,12 @@ export class RealtimeViewer extends Viewer {
         }
     }
 
-    private onRosbridgeMessage(rawData: string, options: RealtimeTopicOptions): void {
-        let payload: RosbridgePublishMessage | RosbridgeServiceResponseMessage;
-        try {
-            payload = JSON.parse(rawData) as RosbridgePublishMessage | RosbridgeServiceResponseMessage;
-        } catch {
-            return;
-        }
-
-        if (payload.op === 'service_response') {
-            this.onServiceResponse(payload as RosbridgeServiceResponseMessage);
-            return;
-        }
-
-        if (payload.op !== 'publish') {
-            return;
-        }
-
-        const publishPayload = payload as RosbridgePublishMessage;
-        if (!publishPayload.topic || !publishPayload.msg) return;
-
-        if (publishPayload.topic === this.cloudTopicName) {
-            const pointCloud2 = publishPayload.msg as PointCloud2Json;
-            this.ingestPointCloud2(pointCloud2, options);
-            return;
-        }
-
-        if (publishPayload.topic === this.odomTopicName) {
-            this.ingestOdometry(publishPayload.msg as OdomJson);
-        }
-    }
-
     private sendSwitchRequest(switchOn: boolean): void {
         if (!switchOn) {
             this.resetRealtimeCloudItems();
         }
 
-        if (!this.rosSocket || this.rosSocket.readyState !== WebSocket.OPEN) {
+        if (!this.rosClient?.isOpen()) {
             if (this.statusElement) {
                 this.statusElement.textContent = 'ROS bridge is not connected. Press Connect first.';
             }
@@ -371,33 +362,61 @@ export class RealtimeViewer extends Viewer {
     }
 
     private sendSwitchRequestWithService(switchOn: boolean, serviceName: string): void {
-        if (!this.rosSocket || this.rosSocket.readyState !== WebSocket.OPEN) return;
+        void this.sendSwitchRequestWithServiceAsync(switchOn, serviceName);
+    }
+
+    private async sendSwitchRequestWithServiceAsync(switchOn: boolean, serviceName: string): Promise<void> {
+        const client = this.rosClient;
+        if (!client?.isOpen()) return;
 
         const fallbackServiceName = this.getAlternateServiceName(serviceName);
+        const action = switchOn ? 'start' : 'end';
+        const service = new Service<Record<string, unknown>, SlamSwitchValues>(client, serviceName);
 
-        const id = `switch-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
-        this.pendingServiceRequests.set(id, {
-            action: switchOn ? 'start' : 'end',
-            switchOn,
-            serviceName,
-            fallbackServiceName,
-        });
-        const request = {
-            op: 'call_service',
-            service: serviceName,
-            args: {
-                switch: switchOn,
-                record: this.autoRecord,
-            },
-            id,
-        };
-        this.rosSocket.send(JSON.stringify(request));
         this.updateRuntimeStatus('slam', 'unknown', switchOn ? 'Starting...' : 'Stopping...');
         if (this.statusElement) {
             this.statusElement.textContent = switchOn
                 ? `Starting SLAM via ${serviceName}...`
                 : `Ending SLAM via ${serviceName}...`;
         }
+
+        try {
+            const values = await service.call(new ServiceRequest({
+                switch: switchOn,
+                record: this.autoRecord,
+            }));
+            const ok = values.success === true;
+
+            if (!ok && fallbackServiceName && fallbackServiceName !== serviceName) {
+                if (this.statusElement) {
+                    this.statusElement.textContent =
+                        `SLAM ${action} failed via ${serviceName}. Retrying via ${fallbackServiceName}...`;
+                }
+                await this.sendSwitchRequestWithServiceAsync(switchOn, fallbackServiceName);
+                return;
+            }
+
+            if (this.statusElement) {
+                this.statusElement.textContent = ok
+                    ? `SLAM ${action} request succeeded via ${serviceName}.`
+                    : `SLAM ${action} request failed via ${serviceName}.`;
+            }
+        } catch {
+            if (fallbackServiceName && fallbackServiceName !== serviceName) {
+                if (this.statusElement) {
+                    this.statusElement.textContent =
+                        `SLAM ${action} failed via ${serviceName}. Retrying via ${fallbackServiceName}...`;
+                }
+                await this.sendSwitchRequestWithServiceAsync(switchOn, fallbackServiceName);
+                return;
+            }
+
+            if (this.statusElement) {
+                this.statusElement.textContent = `SLAM ${action} request failed via ${serviceName}.`;
+            }
+        }
+
+        this.querySlamStatus();
     }
 
     private getAlternateServiceName(serviceName: string): string | null {
@@ -427,22 +446,33 @@ export class RealtimeViewer extends Viewer {
             window.clearInterval(this.statusPollTimer);
             this.statusPollTimer = null;
         }
-        this.pendingStatusRequestIds.clear();
+        this.statusQueryInFlight = false;
     }
 
     private querySlamStatus(): void {
-        if (!this.rosSocket || this.rosSocket.readyState !== WebSocket.OPEN) return;
-        if (this.pendingStatusRequestIds.size > 0) return;
+        const client = this.rosClient;
+        if (!client?.isOpen()) return;
+        if (this.statusQueryInFlight) return;
 
-        const id = `status-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
-        this.pendingStatusRequestIds.add(id);
-        const request = {
-            op: 'call_service',
-            service: this.deriveStatusServiceName(),
-            args: {},
-            id,
-        };
-        this.rosSocket.send(JSON.stringify(request));
+        this.statusQueryInFlight = true;
+        const service = new Service<Record<string, unknown>, SlamStatusValues>(
+            client,
+            this.deriveStatusServiceName(),
+        );
+
+        void service.call(new ServiceRequest({}))
+            .then(values => {
+                this.updateRuntimeStatus('slam', values.slam === true ? 'running' : 'stopped');
+                this.updateRuntimeStatus('livox', values.livox === true ? 'running' : 'stopped');
+                this.updateRuntimeStatus('record', values.record === true ? 'running' : 'stopped');
+                this.updateRuntimeStatus('camera', values.camera === true ? 'running' : 'stopped');
+            })
+            .catch(() => {
+                this.updateAllRuntimeStatus('unknown');
+            })
+            .finally(() => {
+                this.statusQueryInFlight = false;
+            });
     }
 
     private updateRuntimeStatus(kind: 'slam' | 'livox' | 'record' | 'camera', state: 'running' | 'stopped' | 'unknown', text?: string): void {
@@ -471,49 +501,6 @@ export class RealtimeViewer extends Viewer {
         this.updateRuntimeStatus('livox', state, text);
         this.updateRuntimeStatus('record', state, text);
         this.updateRuntimeStatus('camera', state, text);
-    }
-
-    private onServiceResponse(payload: RosbridgeServiceResponseMessage): void {
-        const responseId = payload.id;
-        if (responseId && this.pendingStatusRequestIds.has(responseId)) {
-            this.pendingStatusRequestIds.delete(responseId);
-            if (payload.result !== true || !payload.values) {
-                this.updateAllRuntimeStatus('unknown');
-                return;
-            }
-
-            const values = payload.values as Record<string, unknown>;
-            this.updateRuntimeStatus('slam', values.slam === true ? 'running' : 'stopped');
-            this.updateRuntimeStatus('livox', values.livox === true ? 'running' : 'stopped');
-            this.updateRuntimeStatus('record', values.record === true ? 'running' : 'stopped');
-            this.updateRuntimeStatus('camera', values.camera === true ? 'running' : 'stopped');
-            return;
-        }
-
-        if (!responseId || !this.pendingServiceRequests.has(responseId)) return;
-
-        const requestInfo = this.pendingServiceRequests.get(responseId);
-        if (!requestInfo) return;
-
-        const { action, switchOn, serviceName, fallbackServiceName } = requestInfo;
-        this.pendingServiceRequests.delete(responseId);
-        const ok = payload.result === true && payload.values?.success === true;
-
-        if (!ok && fallbackServiceName && fallbackServiceName !== serviceName) {
-            this.sendSwitchRequestWithService(switchOn, fallbackServiceName);
-            if (this.statusElement) {
-                this.statusElement.textContent =
-                    `SLAM ${action} failed via ${serviceName}. Retrying via ${fallbackServiceName}...`;
-            }
-            return;
-        }
-
-        if (this.statusElement) {
-            this.statusElement.textContent = ok
-                ? `SLAM ${action} request succeeded via ${serviceName}.`
-                : `SLAM ${action} request failed via ${serviceName}.`;
-        }
-        this.querySlamStatus();
     }
 
     private resetRealtimeCloudItems(): void {
